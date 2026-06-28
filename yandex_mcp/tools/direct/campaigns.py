@@ -56,13 +56,19 @@ def register(mcp: FastMCP) -> None:
                     "NegativeKeywords"
                 ],
                 "TextCampaignFieldNames": ["BiddingStrategy", "Settings"],
+                "UnifiedCampaignFieldNames": ["BiddingStrategy", "Settings"],
                 "Page": {
                     "Limit": params.limit,
                     "Offset": params.offset
                 }
             }
 
-            result = await api_client.direct_request("campaigns", "get", request_params)
+            # Use v501 API to support UNIFIED_CAMPAIGN (ЕПК)
+            use_v501 = (
+                not params.types  # no filter = fetch all types including unified
+                or any(t == CampaignType.UNIFIED_CAMPAIGN for t in params.types)
+            )
+            result = await api_client.direct_request("campaigns", "get", request_params, use_v501=use_v501)
             campaigns = result.get("result", {}).get("Campaigns", [])
 
             if params.response_format == ResponseFormat.JSON:
@@ -243,7 +249,10 @@ def register(mcp: FastMCP) -> None:
     async def direct_create_campaign(params: CreateCampaignInput) -> str:
         """Create a new advertising campaign.
 
-        Creates TEXT_CAMPAIGN or CPM_BANNER_CAMPAIGN with specified settings.
+        Supports TEXT_CAMPAIGN, DYNAMIC_TEXT_CAMPAIGN, SMART_CAMPAIGN,
+        UNIFIED_CAMPAIGN (ЕПК, via v501) and CPM_BANNER_CAMPAIGN.
+        Search strategies may be click- or conversion-based (WB_MAXIMUM_CONVERSION_RATE,
+        AVERAGE_CPA, PAY_FOR_CONVERSION — pass goal_id and, for CPA strategies, average_cpa).
         For РСЯ campaigns, use CPM_BANNER_CAMPAIGN type and network_strategy_type.
         """
         try:
@@ -264,18 +273,56 @@ def register(mcp: FastMCP) -> None:
             if params.negative_keywords:
                 campaign["NegativeKeywords"] = {"Items": params.negative_keywords}
 
-            # Build bidding strategy
-            search_strategy = {"BiddingStrategyType": params.search_strategy_type.value}
-            network_strategy = {"BiddingStrategyType": params.network_strategy_type.value}
+            # Build bidding strategy. Search strategies (incl. conversion-based) need a
+            # nested settings struct named after the strategy — Yandex rejects a bare
+            # BiddingStrategyType for everything except SERVING_OFF / HIGHEST_POSITION.
+            def _micro(value: float) -> int:
+                return int(value * 1_000_000)
 
-            if params.search_strategy_type.value == "WB_MAXIMUM_CLICKS":
-                wb_params = {}
-                if params.weekly_spend_limit:
-                    wb_params["WeeklySpendLimit"] = int(params.weekly_spend_limit * 1_000_000)
-                if params.bid_ceiling:
-                    wb_params["BidCeiling"] = int(params.bid_ceiling * 1_000_000)
-                if wb_params:
-                    search_strategy["WbMaximumClicks"] = wb_params
+            def _build_search_strategy() -> dict:
+                stype = params.search_strategy_type.value
+                strat = {"BiddingStrategyType": stype}
+                if stype == "WB_MAXIMUM_CLICKS":
+                    sub = {}
+                    if params.weekly_spend_limit:
+                        sub["WeeklySpendLimit"] = _micro(params.weekly_spend_limit)
+                    if params.bid_ceiling:
+                        sub["BidCeiling"] = _micro(params.bid_ceiling)
+                    if sub:
+                        strat["WbMaximumClicks"] = sub
+                elif stype == "WB_MAXIMUM_CONVERSION_RATE":
+                    sub = {}
+                    if params.weekly_spend_limit:
+                        sub["WeeklySpendLimit"] = _micro(params.weekly_spend_limit)
+                    if params.bid_ceiling:
+                        sub["BidCeiling"] = _micro(params.bid_ceiling)
+                    if params.goal_id:
+                        sub["GoalId"] = params.goal_id
+                    strat["WbMaximumConversionRate"] = sub
+                elif stype == "AVERAGE_CPA":
+                    sub = {}
+                    if params.average_cpa:
+                        sub["AverageCpa"] = _micro(params.average_cpa)
+                    if params.goal_id:
+                        sub["GoalId"] = params.goal_id
+                    if params.weekly_spend_limit:
+                        sub["WeeklySpendLimit"] = _micro(params.weekly_spend_limit)
+                    if params.bid_ceiling:
+                        sub["BidCeiling"] = _micro(params.bid_ceiling)
+                    strat["AverageCpa"] = sub
+                elif stype == "PAY_FOR_CONVERSION":
+                    sub = {}
+                    if params.average_cpa:
+                        sub["Cpa"] = _micro(params.average_cpa)
+                    if params.goal_id:
+                        sub["GoalId"] = params.goal_id
+                    if params.weekly_spend_limit:
+                        sub["WeeklySpendLimit"] = _micro(params.weekly_spend_limit)
+                    strat["PayForConversion"] = sub
+                return strat
+
+            search_strategy = _build_search_strategy()
+            network_strategy = {"BiddingStrategyType": params.network_strategy_type.value}
 
             # Handle network strategy for РСЯ / Smart
             if params.network_strategy_type.value == "NETWORK_DEFAULT":
@@ -369,7 +416,7 @@ def register(mcp: FastMCP) -> None:
                         }]
                     }
 
-                smart_campaign["AttributionModel"] = "LC"
+                smart_campaign["AttributionModel"] = params.attribution_model or "LC"
 
                 campaign["SmartCampaign"] = smart_campaign
 
@@ -400,7 +447,9 @@ def register(mcp: FastMCP) -> None:
                     {"Option": "ENABLE_SITE_MONITORING", "Value": "YES"},
                 ]
 
-                unified_campaign["AttributionModel"] = "LYDC"
+                # AUTO is the recommended default; legacy non-cross-device models
+                # (FC, LSC, LYDC) are no longer accepted by the API → error 5005.
+                unified_campaign["AttributionModel"] = params.attribution_model or "AUTO"
 
                 campaign["UnifiedCampaign"] = unified_campaign
 

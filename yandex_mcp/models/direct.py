@@ -303,6 +303,18 @@ class CreateCampaignInput(BaseModel):
         gt=0,
         description="Maximum bid in currency units"
     )
+    average_cpa: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Target cost per action in currency units. Required for AVERAGE_CPA "
+                    "(target average CPA) and PAY_FOR_CONVERSION (fixed CPA) search strategies."
+    )
+    attribution_model: Optional[str] = Field(
+        default=None,
+        description="Attribution model for UNIFIED/SMART campaigns. Valid: AUTO (recommended), "
+                    "LC, FCCD, LSCCD, LYDCCD. Defaults to AUTO for UNIFIED, LC for SMART. "
+                    "Note: legacy non-cross-device models (FC, LSC, LYDC) are no longer accepted."
+    )
 
 
 # =============================================================================
