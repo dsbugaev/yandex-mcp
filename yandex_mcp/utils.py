@@ -5,6 +5,16 @@ import httpx
 
 def handle_api_error(e: Exception) -> str:
     """Format API errors into actionable messages."""
+    from .client import YandexAPIError
+
+    if isinstance(e, YandexAPIError):
+        parts = [f"Yandex Direct API Error {e.error_code}: {e.error_string}"]
+        if e.error_detail:
+            parts.append(e.error_detail)
+        if e.request_id:
+            parts.append(f"(request_id: {e.request_id})")
+        return " ".join(parts)
+
     if isinstance(e, httpx.HTTPStatusError):
         status = e.response.status_code
         try:

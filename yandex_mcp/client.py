@@ -14,6 +14,29 @@ from .config import (
 )
 
 
+class YandexAPIError(Exception):
+    """Direct API error returned as HTTP 200 with an {"error": {...}} body.
+
+    Without raising here, mutating tools see an empty result and report
+    false success ("updated successfully") while nothing was applied.
+    """
+
+    def __init__(
+        self,
+        error_code: int | None = None,
+        error_string: str = "",
+        error_detail: str = "",
+        request_id: str = "",
+    ):
+        self.error_code = error_code
+        self.error_string = error_string
+        self.error_detail = error_detail
+        self.request_id = request_id
+        super().__init__(
+            f"Yandex API error {error_code}: {error_string}. {error_detail}".strip()
+        )
+
+
 class YandexAPIClient:
     """Unified client for Yandex Direct and Metrika APIs."""
 
@@ -88,7 +111,17 @@ class YandexAPIClient:
         async with httpx.AsyncClient(timeout=req_timeout) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            # Direct API reports request-level errors with HTTP 200
+            if isinstance(data, dict) and "error" in data:
+                err = data["error"] or {}
+                raise YandexAPIError(
+                    error_code=err.get("error_code"),
+                    error_string=err.get("error_string", ""),
+                    error_detail=err.get("error_detail", ""),
+                    request_id=err.get("request_id", ""),
+                )
+            return data
 
     async def metrika_request(
         self,
