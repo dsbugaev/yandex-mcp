@@ -106,7 +106,52 @@ def register(mcp: FastMCP) -> None:
         Only specified fields will be updated.
         """
         try:
+            if (
+                params.bidding_strategy_type is None
+                and any(v is not None for v in (params.bid_ceiling, params.weekly_spend_limit, params.average_cpc))
+            ):
+                return (
+                    "Error: bid_ceiling / weekly_spend_limit / average_cpc require "
+                    "bidding_strategy_type to be set — otherwise they would be ignored."
+                )
+
             campaign_update = {"Id": params.campaign_id}
+
+            # Type-specific fields live in a per-type subobject (TextCampaign,
+            # UnifiedCampaign, ...) — look up the campaign type only when needed.
+            needs_type = (
+                params.counter_ids is not None
+                or params.add_metrica_tag is not None
+                or params.enable_site_monitoring is not None
+                or params.enable_extended_ad_title is not None
+                or params.priority_goals
+                or params.goal_id
+                or params.bidding_strategy_type is not None
+            )
+            type_key = "TextCampaign"
+            use_v501 = False
+            if needs_type:
+                type_result = await api_client.direct_request(
+                    "campaigns", "get",
+                    {
+                        "SelectionCriteria": {"Ids": [params.campaign_id]},
+                        "FieldNames": ["Id", "Type"],
+                    },
+                    use_v501=True,
+                )
+                found = type_result.get("result", {}).get("Campaigns", [])
+                if not found:
+                    return f"Error: campaign {params.campaign_id} not found."
+                campaign_type = found[0].get("Type", "TEXT_CAMPAIGN")
+                type_key = {
+                    "TEXT_CAMPAIGN": "TextCampaign",
+                    "UNIFIED_CAMPAIGN": "UnifiedCampaign",
+                    "DYNAMIC_TEXT_CAMPAIGN": "DynamicTextCampaign",
+                    "SMART_CAMPAIGN": "SmartCampaign",
+                    "MOBILE_APP_CAMPAIGN": "MobileAppCampaign",
+                    "CPM_BANNER_CAMPAIGN": "CpmBannerCampaign",
+                }.get(campaign_type, "TextCampaign")
+                use_v501 = campaign_type == "UNIFIED_CAMPAIGN"
 
             if params.name:
                 campaign_update["Name"] = params.name
@@ -128,9 +173,7 @@ def register(mcp: FastMCP) -> None:
 
             # Handle counter IDs
             if params.counter_ids is not None:
-                if "TextCampaign" not in campaign_update:
-                    campaign_update["TextCampaign"] = {}
-                campaign_update["TextCampaign"]["CounterIds"] = {"Items": params.counter_ids}
+                campaign_update.setdefault(type_key, {})["CounterIds"] = {"Items": params.counter_ids}
 
             # Handle Settings (ADD_METRICA_TAG, etc.)
             settings = []
@@ -141,9 +184,7 @@ def register(mcp: FastMCP) -> None:
             if params.enable_extended_ad_title is not None:
                 settings.append({"Option": "ENABLE_EXTENDED_AD_TITLE", "Value": "YES" if params.enable_extended_ad_title else "NO"})
             if settings:
-                if "TextCampaign" not in campaign_update:
-                    campaign_update["TextCampaign"] = {}
-                campaign_update["TextCampaign"]["Settings"] = settings
+                campaign_update.setdefault(type_key, {})["Settings"] = settings
 
             # Handle priority goals
             if params.priority_goals:
@@ -153,13 +194,9 @@ def register(mcp: FastMCP) -> None:
                         "GoalId": g["goal_id"],
                         "Value": int(g.get("value", 7000) * 1_000_000)
                     })
-                if "TextCampaign" not in campaign_update:
-                    campaign_update["TextCampaign"] = {}
-                campaign_update["TextCampaign"]["PriorityGoals"] = {"Items": goals_items}
+                campaign_update.setdefault(type_key, {})["PriorityGoals"] = {"Items": goals_items}
             elif params.goal_id:
-                if "TextCampaign" not in campaign_update:
-                    campaign_update["TextCampaign"] = {}
-                campaign_update["TextCampaign"]["PriorityGoals"] = {
+                campaign_update.setdefault(type_key, {})["PriorityGoals"] = {
                     "Items": [{"GoalId": params.goal_id, "Value": 7_000_000_000}]
                 }
 
@@ -207,18 +244,16 @@ def register(mcp: FastMCP) -> None:
                     if conv_params:
                         search_strategy["WbMaximumConversionRate"] = conv_params
 
-                campaign_update["TextCampaign"] = {
-                    "BiddingStrategy": {
-                        "Search": search_strategy,
-                        "Network": {"BiddingStrategyType": "SERVING_OFF"}
-                    }
+                campaign_update.setdefault(type_key, {})["BiddingStrategy"] = {
+                    "Search": search_strategy,
+                    "Network": {"BiddingStrategyType": "SERVING_OFF"}
                 }
 
             request_params = {
                 "Campaigns": [campaign_update]
             }
 
-            result = await api_client.direct_request("campaigns", "update", request_params)
+            result = await api_client.direct_request("campaigns", "update", request_params, use_v501=use_v501)
             update_results = result.get("result", {}).get("UpdateResults", [])
 
             errors = []
