@@ -121,3 +121,31 @@ async def test_name_only_update_needs_no_type_lookup(direct_api, mcp_instance):
     assert "successfully" in text
     update = captured["updates"][0]
     assert update["campaign"] == {"Id": 710591141, "Name": "renamed"}
+
+
+@pytest.mark.asyncio
+async def test_attribution_model_goes_to_campaign_type_subobject(direct_api, mcp_instance):
+    captured = direct_api("UNIFIED_CAMPAIGN")
+    text = await _call_update(mcp_instance, attribution_model="AUTO")
+    assert "successfully" in text
+    update = captured["updates"][0]
+    assert update["campaign"]["UnifiedCampaign"]["AttributionModel"] == "AUTO"
+    assert "TextCampaign" not in update["campaign"]
+    assert "/v501/" in update["url"]
+
+
+@pytest.mark.asyncio
+async def test_priority_goals_carry_set_operation(direct_api, mcp_instance):
+    """PriorityGoalsUpdateItem requires Operation; SET is the only allowed value."""
+    captured = direct_api("UNIFIED_CAMPAIGN")
+    await _call_update(mcp_instance, priority_goals=[{"goal_id": 123, "value": 500}])
+    items = captured["updates"][0]["campaign"]["UnifiedCampaign"]["PriorityGoals"]["Items"]
+    assert items == [{"GoalId": 123, "Value": 500_000_000, "Operation": "SET"}]
+
+
+@pytest.mark.asyncio
+async def test_single_goal_id_carries_set_operation(direct_api, mcp_instance):
+    captured = direct_api("TEXT_CAMPAIGN")
+    await _call_update(mcp_instance, goal_id=123)
+    items = captured["updates"][0]["campaign"]["TextCampaign"]["PriorityGoals"]["Items"]
+    assert items == [{"GoalId": 123, "Value": 7_000_000_000, "Operation": "SET"}]

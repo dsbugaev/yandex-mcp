@@ -127,6 +127,7 @@ def register(mcp: FastMCP) -> None:
                 or params.priority_goals
                 or params.goal_id
                 or params.bidding_strategy_type is not None
+                or params.attribution_model is not None
             )
             type_key = "TextCampaign"
             use_v501 = False
@@ -192,12 +193,13 @@ def register(mcp: FastMCP) -> None:
                 for g in params.priority_goals:
                     goals_items.append({
                         "GoalId": g["goal_id"],
-                        "Value": int(g.get("value", 7000) * 1_000_000)
+                        "Value": int(g.get("value", 7000) * 1_000_000),
+                        "Operation": "SET",
                     })
                 campaign_update.setdefault(type_key, {})["PriorityGoals"] = {"Items": goals_items}
             elif params.goal_id:
                 campaign_update.setdefault(type_key, {})["PriorityGoals"] = {
-                    "Items": [{"GoalId": params.goal_id, "Value": 7_000_000_000}]
+                    "Items": [{"GoalId": params.goal_id, "Value": 7_000_000_000, "Operation": "SET"}]
                 }
 
             # Handle excluded sites (placements blacklist)
@@ -206,9 +208,7 @@ def register(mcp: FastMCP) -> None:
 
             # Handle attribution model
             if params.attribution_model is not None:
-                if "TextCampaign" not in campaign_update:
-                    campaign_update["TextCampaign"] = {}
-                campaign_update["TextCampaign"]["AttributionModel"] = params.attribution_model
+                campaign_update.setdefault(type_key, {})["AttributionModel"] = params.attribution_model
 
             # Handle bidding strategy update
             if params.bidding_strategy_type is not None:
